@@ -1,0 +1,43 @@
+{
+  "name": "claude-call",
+  "version": "0.0.0",
+  "description": "Invoke Claude tools directly.",
+  "keywords": [
+    "claude",
+    "anthropic",
+    "mcp",
+    "sse",
+    "fake-api",
+    "scripted-agent"
+  ],
+  "homepage": "https://github.com/kolodny/claude-call#readme",
+  "bugs": {
+    "url": "https://github.com/kolodny/claude-call/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kolodny/claude-call.git"
+  },
+  "license": "MIT",
+  "author": "Moshe Kolodny",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "claude-call": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "debug": "^4.4.3"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}
