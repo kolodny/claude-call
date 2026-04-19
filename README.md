@@ -7,7 +7,7 @@ Invoke Claude tools directly.
 
 ## Why
 
-Your project already has Claude Code working — MCP servers authenticated, env vars set, permissions dialed in. `claude-call` reuses all of that to invoke a single tool directly, so you don't have to replicate the MCP auth dance or rebuild the environment just to call one tool from a script. No LLM in the loop: no reasoning, no tokens. Under a second, end-to-end.
+Your project already has Claude Code working — MCP servers authenticated, env vars set, permissions dialed in. `claude-call` reuses all of that to invoke a single tool directly, so you don't have to replicate the MCP auth dance or rebuild the environment just to call one tool from a script. No LLM in the loop: no reasoning, no tokens.
 
 ## Usage
 
@@ -18,21 +18,65 @@ npx claude-call mcp__linear__get_issue '{"id":"ENG-123"}'
 Tool name format is `mcp__<server>__<tool>`. The `input` JSON must match the tool's schema exactly. The tool's result is printed to stdout; exit is `0` on success, `1` if something went wrong (stderr has the message).
 
 <details>
-<summary><h2 style="display:inline">Advanced: <code>--serving</code></h2></summary>
+<summary><h2 style="display:inline">Advanced: <code>serve</code> + <code>--server</code> for many calls</h2></summary>
 
-Starts a fake Anthropic Messages API, prints the listening port, exits. The server keeps running in a detached child. Use when you want to compose the `claude -p` invocation yourself.
+Each one-shot call spawns a fresh `claude` subprocess, which pays the full MCP connect cost (~5–20s) *and* starts with fresh MCP state. Two reasons to run a server instead:
+
+1. **Speed** — scripts making many calls skip the reconnect on every call after the first.
+2. **Stateful MCPs** — MCPs that hold in-process state reset between one-shot calls, since each call spawns fresh MCP subprocesses. Under `serve`, the MCP subprocesses live as long as the claude child does, so state persists across `--server` calls. If your script depends on state surviving between calls, you **need** `serve` — one-shot won't work.
+
+Run `claude-call serve` to boot one `claude` and keep it alive, then hit it with `--server=<port>`.
+
+`claude-call serve` runs in the foreground. It prints a single JSON line to stdout: `{"port":<num>,"pid":<num>}`. All other output (logs, claude's stderr) goes to stderr so the stdout line is trivially parseable.
+
+Put it in the background with `&` (capturing the first line via a log file), use process substitution, or just run it in a second terminal.
 
 ```bash
-PORT=$(npx claude-call --serving mcp__linear__get_issue '{"id":"ENG-123"}')
+# Start serve in the background and capture port/pid.
+npx claude-call serve > /tmp/cc.out &
+until [ -s /tmp/cc.out ]; do sleep 0.1; done
+eval "$(jq -r '"PORT=\(.port); PID=\(.pid)"' /tmp/cc.out)"
 
-ANTHROPIC_API_KEY=sk-fake claude -p \
-  --settings "{\"env\":{\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:$PORT\"},\"permissions\":{\"allow\":[\"mcp__linear__get_issue\"]}}" \
-  --permission-mode acceptEdits \
-  --output-format json "go" \
-  | jq -r .result
+# Wait until MCPs are connected so the first real call is warm too.
+until curl -sf http://127.0.0.1:$PORT/ready > /dev/null; do sleep 0.2; done
+
+# All calls are now fast.
+for id in ENG-123 ENG-124 ENG-125; do
+  npx claude-call --server=$PORT mcp__linear__get_issue "{\"id\":\"$id\"}"
+done
+
+# Stop serve when you're done (SIGINT/SIGTERM also work cleanly).
+curl -s http://127.0.0.1:$PORT/kill   # or: kill $PID
 ```
 
-Turn 1 of the scripted conversation returns a `tool_use` block for your tool. Turn 2 echoes the `tool_result` as the end_turn text, so claude's `.result` field is exactly the tool's output.
+**Endpoints:** `POST /call` (body: `{tool, input}`) drives claude; `GET /ready` returns 200 once MCPs are connected (claude is warmed with a no-op `Bash true` on startup); `GET /kill` exits.
+
+**Concurrency is 1** — calls against the same server serialize (claude handles one turn at a time). If you need parallelism, start multiple servers.
+
+**Timeouts**: pass `-t/--timeout <ms>` to `claude-call --server=...` to cap a single call; default 120s.
+
+The server listens on `127.0.0.1` only. It runs claude with `--permission-mode=bypassPermissions`, which is fine for a locally-owned process but would be a bad idea on a shared host.
+
+### `--skip-claude`: bring your own claude
+
+If you want to compose the `claude` invocation yourself, pass `--skip-claude`. `serve` then exposes only the fake `/v1/messages` endpoint (and `/kill`), and you drive claude manually:
+
+```bash
+npx claude-call serve --skip-claude > /tmp/cc.out &
+until [ -s /tmp/cc.out ]; do sleep 0.1; done
+eval "$(jq -r '"PORT=\(.port); PID=\(.pid)"' /tmp/cc.out)"
+
+claude -p \
+  --settings "{\"env\":{\"ANTHROPIC_API_KEY\":\"sk-fake\",\"ANTHROPIC_AUTH_TOKEN\":\"sk-fake\",\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:$PORT\"}}" \
+  --permission-mode bypassPermissions \
+  --output-format json \
+  '{"tool":"mcp__linear__get_issue","input":{"id":"ENG-123"}}' \
+  | jq -r .result
+
+curl -s http://127.0.0.1:$PORT/kill
+```
+
+In `--skip-claude` mode there's no `/call` endpoint, so `--server` won't work — you're on your own for talking to claude.
 
 </details>
 
