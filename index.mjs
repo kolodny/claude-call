@@ -97,23 +97,45 @@ function startServer(port, timeoutMs, routes = {}) {
   });
 }
 
-function spawnStreamingClaude(port, onExit) {
-  const settings = JSON.stringify({
+function deepMerge(a, b) {
+  const out = { ...(a ?? {}) };
+  for (const [k, v] of Object.entries(b ?? {})) {
+    const existing = out[k];
+    const isPlainObj = (x) => x && typeof x === 'object' && !Array.isArray(x);
+    if (isPlainObj(v) && isPlainObj(existing)) out[k] = deepMerge(existing, v);
+    else out[k] = v;
+  }
+  return out;
+}
+
+function spawnStreamingClaude(port, { onExit, extraSettings } = {}) {
+  // mcpServers must go through --mcp-config; claude registers MCPs during init,
+  // before --settings is applied, so mcpServers inside --settings is silently ignored.
+  const { mcpServers, ...restSettings } = extraSettings ?? {};
+  // Three layers, lowest-to-highest precedence:
+  //  1. Our defaults (automation-friendly behavior; user can override).
+  //  2. User's --settings (deep-merges on top).
+  //  3. Our required fake-server pointer (always wins, else we intercept nothing).
+  // Placeholder API key ensures claude starts even when the user has no
+  // apiKeyHelper / real key configured; value doesn't matter (server ignores).
+  const defaults = { disableAllHooks: true };
+  const required = {
     env: {
-      ANTHROPIC_API_KEY: 'sk-fake',
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-      // Defeat the apiKeyHelper config that would otherwise route to the real API.
-      ANTHROPIC_AUTH_TOKEN: 'sk-fake',
+      ANTHROPIC_API_KEY: 'sk-fake',
     },
-  });
+  };
+  const merged = deepMerge(deepMerge(defaults, restSettings), required);
   const args = [
     '--input-format=stream-json',
     '--output-format=stream-json',
     '--verbose',
     '-p',
     '--permission-mode=bypassPermissions',
-    '--settings', settings,
+    '--no-session-persistence',
+    '--settings', JSON.stringify(merged),
   ];
+  if (mcpServers) args.push('--mcp-config', JSON.stringify({ mcpServers }));
   const child = spawn('claude', args, { stdio: ['pipe', 'pipe', 'inherit'] });
   const queue = [];
   let alive = true;
@@ -169,9 +191,9 @@ async function expandPersistedOutput(text) {
   }
 }
 
-async function runCall(tool, input, timeoutMs) {
+async function runCall(tool, input, timeoutMs, extraSettings) {
   const { port, close } = await startServer(0, timeoutMs);
-  const claude = spawnStreamingClaude(port);
+  const claude = spawnStreamingClaude(port, { extraSettings });
   try {
     return await claude.send(tool, input);
   } finally {
@@ -201,7 +223,7 @@ async function runViaServer(serverPort, tool, input, timeoutMs) {
   }
 }
 
-async function runServe(port, timeoutMs, skipClaude) {
+async function runServe(port, timeoutMs, skipClaude, extraSettings) {
   let claude;
   let ready = !!skipClaude; // skip-claude has nothing to warm up
   const routes = {};
@@ -218,11 +240,14 @@ async function runServe(port, timeoutMs, skipClaude) {
   process.on('SIGTERM', () => { shutdown(); process.exit(143); });
 
   if (!skipClaude) {
-    claude = spawnStreamingClaude(actual, (code) => {
-      if (shuttingDown) return;
-      console.error(`claude-call: claude subprocess exited (code ${code}); shutting down`);
-      close();
-      process.exit(code ?? 1);
+    claude = spawnStreamingClaude(actual, {
+      extraSettings,
+      onExit: (code) => {
+        if (shuttingDown) return;
+        console.error(`claude-call: claude subprocess exited (code ${code}); shutting down`);
+        close();
+        process.exit(code ?? 1);
+      },
     });
     // Warmup: force MCPs to connect and the stream-json session to initialize so
     // the first real call is warm. `Bash true` is the cheapest built-in.
@@ -257,16 +282,32 @@ async function runServe(port, timeoutMs, skipClaude) {
   writeSync(1, JSON.stringify({ port: actual, pid: process.pid }) + '\n');
 }
 
+function parseJsonObject(raw) {
+  const v = JSON.parse(raw);
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    throw new Error('--settings must be a JSON object');
+  }
+  return v;
+}
+
+const SETTINGS_DESC = `extra settings JSON to pass to claude (e.g. \'{"disableAllHooks":true}\')`;
+
 const program = new Command()
   .name('claude-call')
   .version(VERSION)
+  // Needed so that options declared on both root and subcommands (like --settings)
+  // are parsed independently per scope rather than captured at the root.
+  .enablePositionalOptions()
   .argument('<tool>')
   .argument('[input]', 'JSON tool args', '{}')
   .option('-t, --timeout <ms>', 'hard deadline (also per-call timeout for --server)', Number, 120_000)
   .option('--server <port>', 'target a running `claude-call serve` on this port', Number)
-  .action((tool, inputJson, { timeout, server }) => {
+  .option('--settings <json>', SETTINGS_DESC, parseJsonObject)
+  .action((tool, inputJson, { timeout, server, settings }) => {
     const input = JSON.parse(inputJson);
-    const p = server ? runViaServer(server, tool, input, timeout) : runCall(tool, input, timeout);
+    const p = server
+      ? runViaServer(server, tool, input, timeout)
+      : runCall(tool, input, timeout, settings);
     p.then(expandPersistedOutput).then(
       (result) => process.stdout.write(result),
       (e) => exit(`${e?.message ?? e}`, 1),
@@ -279,6 +320,7 @@ program
   .option('-p, --port <n>', 'listen port', Number, 0)
   .option('-t, --timeout <ms>', 'hard deadline, 0 = never', Number, 0)
   .option('--skip-claude', "don't launch claude; only expose /v1/messages (bring your own claude via ANTHROPIC_BASE_URL)")
-  .action(({ port, timeout, skipClaude }) => runServe(port, timeout, skipClaude));
+  .option('--settings <json>', SETTINGS_DESC, parseJsonObject)
+  .action(({ port, timeout, skipClaude, settings }) => runServe(port, timeout, skipClaude, settings));
 
 program.parse();

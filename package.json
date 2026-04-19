@@ -1,6 +1,6 @@
 {
   "name": "claude-call",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Invoke Claude tools directly.",
   "keywords": [
     "claude",
@@ -36,7 +36,9 @@
     "commander": "^12.1.0",
     "debug": "^4.4.3"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
   "engines": {
     "node": ">=18"
   }

@@ -99,3 +99,78 @@ describe('serve daemon', () => {
     assert.equal(r.status, 200);
   });
 });
+
+describe('stateful MCP via --server', () => {
+  let child, port;
+  const mcpPath = join(dirname(fileURLToPath(import.meta.url)), 'mcp-counter-fixture.mjs');
+  const settings = {
+    mcpServers: {
+      counter: { command: process.execPath, args: [mcpPath] },
+    },
+  };
+
+  before(async () => {
+    child = spawn(
+      process.execPath,
+      [cli, 'serve', '--settings', JSON.stringify(settings)],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const line = await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error('serve startup timeout')), 30_000);
+      child.stdout.once('data', (d) => {
+        clearTimeout(to);
+        resolve(String(d).trim());
+      });
+      child.once('exit', (code) => {
+        clearTimeout(to);
+        reject(new Error(`serve exited early, code=${code}`));
+      });
+    });
+    ({ port } = JSON.parse(line));
+    // Wait for warmup + MCP init to finish before any test calls, otherwise a
+    // test call and the warmup interleave and trip the stream-json state machine.
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const r = await fetch(`http://127.0.0.1:${port}/ready`);
+      if (r.status === 200) break;
+      await new Promise((x) => setTimeout(x, 100));
+    }
+  });
+
+  after(async () => {
+    try { await fetch(`http://127.0.0.1:${port}/kill`); } catch {}
+    if (child && child.exitCode === null) try { child.kill(); } catch {}
+  });
+
+  // MCP tool results come back as a JSON-encoded array of content blocks, e.g.
+  // `[{"type":"text","text":"1"}]`. Extract the concatenated text.
+  const mcpText = (raw) =>
+    JSON.parse(raw.trim())
+      .map((b) => b.text ?? '')
+      .join('');
+
+  test('counter state persists across successive --server calls', async () => {
+    const call = async (tool) => {
+      const { stdout } = await run(['--server', port, tool, '{}']);
+      return mcpText(stdout);
+    };
+    assert.equal(await call('mcp__counter__increment'), '1');
+    assert.equal(await call('mcp__counter__increment'), '2');
+    assert.equal(await call('mcp__counter__read'), '2');
+    assert.equal(await call('mcp__counter__read'), '2');
+    assert.equal(await call('mcp__counter__increment'), '3');
+    assert.equal(await call('mcp__counter__read'), '3');
+  });
+
+  test('one-shot mode does NOT preserve MCP state (each call = fresh process)', async () => {
+    const oneShot = async (tool) => {
+      const { stdout } = await run([
+        '--settings', JSON.stringify(settings), tool, '{}',
+      ]);
+      return mcpText(stdout);
+    };
+    assert.equal(await oneShot('mcp__counter__increment'), '1');
+    assert.equal(await oneShot('mcp__counter__increment'), '1');
+    assert.equal(await oneShot('mcp__counter__read'), '0');
+  });
+});

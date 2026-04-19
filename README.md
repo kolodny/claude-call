@@ -17,6 +17,14 @@ npx claude-call mcp__linear__get_issue '{"id":"ENG-123"}'
 
 Tool name format is `mcp__<server>__<tool>`. The `input` JSON must match the tool's schema exactly. The tool's result is printed to stdout; exit is `0` on success, `1` if something went wrong (stderr has the message).
 
+Hooks in your Claude Code config are disabled by default — `claude-call` is for scripted dispatch, and interactive hooks can silently deny or hang calls. Re-enable them for a specific invocation with:
+
+```bash
+npx claude-call --settings='{"disableAllHooks":false}' Bash '{"command":"ls"}'
+```
+
+`--settings <json>` is deep-merged on top of the defaults; anything you can put in Claude Code's `settings.json` goes there.
+
 <details>
 <summary><h2 style="display:inline">Advanced: <code>serve</code> + <code>--server</code> for many calls</h2></summary>
 
@@ -55,6 +63,12 @@ curl -s http://127.0.0.1:$PORT/kill   # or: kill $PID
 
 **Timeouts**: pass `-t/--timeout <ms>` to `claude-call --server=...` to cap a single call; default 120s.
 
+**Per-server `--settings`**: `claude-call serve --settings=<json>` applies to the long-running claude, so every `--server` call inherits it. Useful for registering ad-hoc MCP servers for a script without touching the user's config:
+
+```bash
+claude-call serve --settings='{"mcpServers":{"my-thing":{"command":"node","args":["my-mcp.mjs"]}}}'
+```
+
 The server listens on `127.0.0.1` only. It runs claude with `--permission-mode=bypassPermissions`, which is fine for a locally-owned process but would be a bad idea on a shared host.
 
 ### `--skip-claude`: bring your own claude
@@ -67,7 +81,7 @@ until [ -s /tmp/cc.out ]; do sleep 0.1; done
 eval "$(jq -r '"PORT=\(.port); PID=\(.pid)"' /tmp/cc.out)"
 
 claude -p \
-  --settings "{\"env\":{\"ANTHROPIC_API_KEY\":\"sk-fake\",\"ANTHROPIC_AUTH_TOKEN\":\"sk-fake\",\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:$PORT\"}}" \
+  --settings "{\"env\":{\"ANTHROPIC_API_KEY\":\"sk-fake\",\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:$PORT\"}}" \
   --permission-mode bypassPermissions \
   --output-format json \
   '{"tool":"mcp__linear__get_issue","input":{"id":"ENG-123"}}' \
