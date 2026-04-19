@@ -21,13 +21,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     { name: 'increment', description: 'increment counter; return new value', inputSchema: EMPTY },
     { name: 'read', description: 'return current counter value', inputSchema: EMPTY },
+    {
+      name: 'big_payload',
+      description: 'return exactly N bytes of "x" (persisted-output regression test)',
+      inputSchema: {
+        type: 'object',
+        properties: { size: { type: 'integer' } },
+        required: ['size'],
+      },
+    },
   ],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name } = req.params;
+  const { name, arguments: args } = req.params;
   if (name === 'increment') count++;
-  else if (name !== 'read') throw new Error(`unknown tool: ${name}`);
+  else if (name === 'big_payload') {
+    return { content: [{ type: 'text', text: 'x'.repeat(args.size) }] };
+  } else if (name !== 'read') throw new Error(`unknown tool: ${name}`);
   return { content: [{ type: 'text', text: String(count) }] };
 });
 

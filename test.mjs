@@ -162,6 +162,22 @@ describe('stateful MCP via --server', () => {
     assert.equal(await call('mcp__counter__read'), '3');
   });
 
+  test('--server returns full payload for MCP results >50KB (persisted-output path)', async () => {
+    // Regression for a bug where Claude Code's internal aux 1-msg API call
+    // (triggered for large outputs) made the fake server drop the tool_use id,
+    // so the real tool_result arrived unmatched and the client got "".
+    const sizes = [1_000, 80_000, 1_000_000];
+    for (const size of sizes) {
+      const { stdout } = await run(
+        ['--server', port, 'mcp__counter__big_payload', JSON.stringify({ size })],
+        120_000,
+      );
+      const text = mcpText(stdout);
+      assert.equal(text.length, size, `size=${size} got length ${text.length}`);
+      assert.match(text, /^x+$/, `size=${size} content corrupted`);
+    }
+  });
+
   test('one-shot mode does NOT preserve MCP state (each call = fresh process)', async () => {
     const oneShot = async (tool) => {
       const { stdout } = await run([

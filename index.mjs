@@ -42,9 +42,6 @@ function startServer(port, timeoutMs, routes = {}) {
       await new Promise((r) => req.once('end', r));
       const { messages } = JSON.parse(body);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      // A 1-msg request marks the start of a new turn (claude session state has
-      // been reset for this user input) — drop any ids issued on prior turns.
-      if (messages.length === 1) issued.clear();
       // Scan the whole convo for a tool_result that answers a tool_use we issued.
       // Stream-json mode keeps history across turns and prepends old tool_results
       // to new user messages, so we can't use block order — only matching ids
@@ -72,6 +69,12 @@ function startServer(port, timeoutMs, routes = {}) {
         try {
           const { tool, input } = JSON.parse(textBlock.text);
           if (typeof tool === 'string') {
+            // A 1-msg request with a valid tool spec = genuine new turn → drop
+            // ids from prior turns. (We deliberately don't clear on every
+            // 1-msg request because Claude Code makes auxiliary 1-msg calls
+            // with raw payloads for >50KB tool outputs; those shouldn't wipe
+            // the id the real tool_result will need to match.)
+            if (messages.length === 1) issued.clear();
             const id = `toolu_${randomUUID().replace(/-/g, '').slice(0, 22)}`;
             issued.add(id);
             log(`prompt → tool_use(${tool}) id=${id}`);

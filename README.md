@@ -66,8 +66,10 @@ curl -s http://127.0.0.1:$PORT/kill   # or: kill $PID
 **Per-server `--settings`**: `claude-call serve --settings=<json>` applies to the long-running claude, so every `--server` call inherits it. Useful for registering ad-hoc MCP servers for a script without touching the user's config:
 
 ```bash
-claude-call serve --settings='{"mcpServers":{"my-thing":{"command":"node","args":["my-mcp.mjs"]}}}'
+claude-call serve --settings='{"mcpServers":{"my-thing":{"command":"/abs/path/to/node","args":["my-mcp.mjs"]}}}'
 ```
+
+> Use an absolute binary path for `mcpServers.*.command`. Shell aliases and functions aren't resolved by the child claude's process spawner — it execs the binary directly.
 
 The server listens on `127.0.0.1` only. It runs claude with `--permission-mode=bypassPermissions`, which is fine for a locally-owned process but would be a bad idea on a shared host.
 
