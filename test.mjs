@@ -8,11 +8,35 @@ import { dirname, join } from 'node:path';
 const execFileP = promisify(execFile);
 const cli = join(dirname(fileURLToPath(import.meta.url)), 'index.mjs');
 const run = (args, timeout = 60_000) =>
-  execFileP(process.execPath, [cli, ...args], { timeout });
+  execFileP(process.execPath, [cli, ...args], { timeout, maxBuffer: 32 * 1024 * 1024 });
 
 test('one-shot: runs a Bash tool and returns its stdout', async () => {
   const { stdout } = await run(['Bash', '{"command":"echo hello"}'], 30_000);
   assert.equal(stdout.trim(), 'hello');
+});
+
+test('listToolSchemas dumps builtins + registered MCP tool schemas', async () => {
+  const mcpPath = join(dirname(fileURLToPath(import.meta.url)), 'mcp-counter-fixture.mjs');
+  const settings = {
+    mcpServers: { counter: { command: process.execPath, args: [mcpPath] } },
+  };
+  const { stdout } = await run(
+    ['listToolSchemas', '--settings', JSON.stringify(settings)],
+    60_000,
+  );
+  const tools = JSON.parse(stdout);
+  assert.ok(Array.isArray(tools) && tools.length > 0, 'tools array non-empty');
+  const bash = tools.find((t) => t.name === 'Bash');
+  assert.ok(bash, 'Bash builtin should be present');
+  assert.ok(bash.input_schema, 'Bash should have input_schema');
+  assert.ok(
+    tools.find((t) => t.name === 'mcp__counter__increment'),
+    'registered MCP tool mcp__counter__increment should be present',
+  );
+  assert.ok(
+    tools.find((t) => t.name === 'mcp__counter__read'),
+    'registered MCP tool mcp__counter__read should be present',
+  );
 });
 
 describe('serve daemon', () => {

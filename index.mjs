@@ -13,7 +13,7 @@ const { version: VERSION } = createRequire(import.meta.url)('./package.json');
 const log = debug('claude-call');
 const usage = { input_tokens: 1, output_tokens: 1 };
 
-function startServer(port, timeoutMs, routes = {}) {
+function startServer(port, timeoutMs, routes = {}, onRequestBody) {
   return new Promise((resolvePort) => {
     let server;
     const close = () => server?.close().closeAllConnections?.();
@@ -40,7 +40,9 @@ function startServer(port, timeoutMs, routes = {}) {
       let body = '';
       req.on('data', (c) => (body += c));
       await new Promise((r) => req.once('end', r));
-      const { messages } = JSON.parse(body);
+      const parsedBody = JSON.parse(body);
+      onRequestBody?.(parsedBody);
+      const { messages } = parsedBody;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       // Scan the whole convo for a tool_result that answers a tool_use we issued.
       // Stream-json mode keeps history across turns and prepends old tool_results
@@ -176,7 +178,9 @@ function spawnStreamingClaude(port, { onExit, extraSettings } = {}) {
 }
 
 const exit = (msg, code = 0) => {
-  console[code === 0 ? 'log' : 'error'](msg);
+  // writeSync bypasses node's async stdio buffering; process.exit() fires right
+  // after and would otherwise drop a queued async write.
+  writeSync(code === 0 ? 1 : 2, `${msg}\n`);
   process.exit(code);
 };
 
@@ -223,6 +227,26 @@ async function runViaServer(serverPort, tool, input, timeoutMs) {
     throw e;
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+async function runListToolSchemas(extraSettings) {
+  let tools = null;
+  const { port, close } = await startServer(0, 0, {}, (body) => {
+    // Claude's aux Haiku calls use an empty tools array; wait for the real one.
+    if (!tools && body.tools?.length) tools = body.tools;
+  });
+  const claude = spawnStreamingClaude(port, { extraSettings });
+  try {
+    // Need at least one API call so claude emits its `tools` array to us.
+    // `Bash true` is the cheapest builtin; result content doesn't matter.
+    await claude.send('Bash', { command: 'true' });
+    // writeSync bypasses Node's pipe buffering — process.exit(0) happens right
+    // after this and any queued async write would be dropped.
+    writeSync(1, JSON.stringify(tools ?? [], null, 2) + '\n');
+  } finally {
+    claude.kill();
+    close();
   }
 }
 
@@ -315,6 +339,18 @@ const program = new Command()
       (result) => process.stdout.write(result),
       (e) => exit(`${e?.message ?? e}`, 1),
     );
+  });
+
+program
+  .command('listToolSchemas')
+  .description('print JSON schemas for all tools claude exposes (built-ins + MCP) and exit')
+  .option('--settings <json>', SETTINGS_DESC, parseJsonObject)
+  .action(({ settings }) => {
+    runListToolSchemas(settings).then(
+      () => process.exit(0),
+      (e) => exit(`${e?.message ?? e}`, 1),
+    );
+
   });
 
 program

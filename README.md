@@ -25,6 +25,14 @@ npx claude-call --settings='{"disableAllHooks":false}' Bash '{"command":"ls"}'
 
 `--settings <json>` is deep-merged on top of the defaults; anything you can put in Claude Code's `settings.json` goes there.
 
+## Discovering tools
+
+```bash
+npx claude-call listToolSchemas
+```
+
+Spawns claude briefly, captures its `tools` array (built-ins + every registered MCP), and prints the schemas as JSON. Handy for seeing what tool names exist, what inputs they expect, or feeding into another system that needs the schema. Accepts `--settings` to scope the lookup to specific MCPs.
+
 <details>
 <summary><h2 style="display:inline">Advanced: <code>serve</code> + <code>--server</code> for many calls</h2></summary>
 

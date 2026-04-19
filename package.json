@@ -1,6 +1,6 @@
 {
   "name": "claude-call",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Invoke Claude tools directly.",
   "keywords": [
     "claude",
